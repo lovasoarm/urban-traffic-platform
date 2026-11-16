@@ -1,0 +1,39 @@
+server:
+  port: 8082
+  shutdown: graceful
+spring:
+  application:
+    name: history-service
+  lifecycle:
+    timeout-per-shutdown-phase: 20s
+  cassandra:
+    contact-points: ${CASSANDRA_CONTACT_POINTS:cassandra}
+    port: ${CASSANDRA_PORT:9042}
+    local-datacenter: ${CASSANDRA_DATACENTER:datacenter1}
+    keyspace-name: traffic
+    schema-action: none
+    request:
+      timeout: 8s
+management:
+  server:
+    port: 9082
+  endpoints:
+    web:
+      exposure:
+        include: health,prometheus,info
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      show-details: never
+  metrics:
+    tags:
+      application: ${spring.application.name}
+history:
+  traffic-service-url: ${TRAFFIC_SERVICE_URL:http://traffic-service:8081}
+  max-import-batch-size: ${HISTORY_MAX_IMPORT_BATCH_SIZE:5000}
+  max-range-days: ${HISTORY_MAX_RANGE_DAYS:31}
+  collector:
+    fixed-rate-ms: ${HISTORY_COLLECTOR_FIXED_RATE_MS:300000}
+    initial-delay-ms: ${HISTORY_COLLECTOR_INITIAL_DELAY_MS:20000}
+    retry-count: 1

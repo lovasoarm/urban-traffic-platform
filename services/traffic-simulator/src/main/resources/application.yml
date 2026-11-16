@@ -1,0 +1,17 @@
+spring:
+  application:
+    name: traffic-simulator
+  main:
+    web-application-type: none
+  lifecycle:
+    timeout-per-shutdown-phase: 20s
+simulator:
+  gateway-url: ${SIMULATOR_GATEWAY_URL:http://gateway:8080}
+  seed-days: ${SIMULATOR_SEED_DAYS:14}
+  interval-ms: ${SIMULATOR_INTERVAL_MS:5000}
+  segment-count: ${SIMULATOR_SEGMENT_COUNT:10}
+  measurements-per-segment: ${SIMULATOR_MEASUREMENTS_PER_SEGMENT:3}
+  center-latitude: ${SIMULATOR_CENTER_LAT:-18.8792}
+  center-longitude: ${SIMULATOR_CENTER_LON:47.5079}
+  random-seed: ${SIMULATOR_RANDOM_SEED:20261114}
+  management-port: ${SIMULATOR_MANAGEMENT_PORT:9084}

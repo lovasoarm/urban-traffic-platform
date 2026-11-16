@@ -1,0 +1,272 @@
+name: urban-traffic-platform
+
+services:
+  mongodb:
+    image: ${MONGO_IMAGE:-mongo:7.0.48}
+    command: ["mongod", "--bind_ip_all", "--wiredTigerCacheSizeGB", "0.25"]
+    volumes:
+      - mongo-data:/data/db
+    networks: [traffic-net]
+    mem_limit: 768m
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    restart: unless-stopped
+
+  redis:
+    image: ${REDIS_IMAGE:-redis:7.4.12-alpine}
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory", "128mb", "--maxmemory-policy", "allkeys-lru"]
+    volumes:
+      - redis-data:/data
+    networks: [traffic-net]
+    mem_limit: 192m
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  cassandra:
+    image: ${CASSANDRA_IMAGE:-cassandra:4.1.12}
+    environment:
+      CASSANDRA_CLUSTER_NAME: UrbanTraffic
+      CASSANDRA_DC: ${CASSANDRA_DATACENTER:-datacenter1}
+      CASSANDRA_ENDPOINT_SNITCH: GossipingPropertyFileSnitch
+      MAX_HEAP_SIZE: 512M
+      HEAP_NEWSIZE: 100M
+    volumes:
+      - cassandra-data:/var/lib/cassandra
+    networks: [traffic-net]
+    mem_limit: 1024m
+    healthcheck:
+      test: ["CMD-SHELL", "cqlsh 127.0.0.1 9042 -e 'SELECT release_version FROM system.local' >/dev/null 2>&1"]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 120s
+    restart: unless-stopped
+
+  cassandra-init:
+    image: ${CASSANDRA_IMAGE:-cassandra:4.1.12}
+    depends_on:
+      cassandra:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-c"]
+    command: ["cqlsh cassandra 9042 -f /schema.cql"]
+    volumes:
+      - ./infra/cassandra/schema.cql:/schema.cql:ro
+    networks: [traffic-net]
+    mem_limit: 256m
+    restart: on-failure
+
+  traffic-service:
+    build:
+      context: .
+      dockerfile: services/traffic-service/Dockerfile
+    environment:
+      MONGODB_URI: mongodb://mongodb:27017/${MONGO_DATABASE:-urban_traffic}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_TTL: ${REDIS_TTL_SECONDS:-600}s
+      MONGO_RETENTION_DAYS: ${MONGO_RETENTION_DAYS:-7}
+      TRAFFIC_MAX_BATCH_SIZE: ${TRAFFIC_MAX_BATCH_SIZE:-500}
+      TRAFFIC_SMOOTHING_FACTOR: ${TRAFFIC_SMOOTHING_FACTOR:-0.35}
+      TRAFFIC_MAX_READING_AGE: ${TRAFFIC_MAX_READING_AGE:-10m}
+      TRAFFIC_MAX_FUTURE_SKEW: ${TRAFFIC_MAX_FUTURE_SKEW:-1m}
+      CONGESTION_FREE_RATIO: ${CONGESTION_FREE_RATIO:-0.70}
+      CONGESTION_DENSE_RATIO: ${CONGESTION_DENSE_RATIO:-0.40}
+      CONGESTION_CONGESTED_RATIO: ${CONGESTION_CONGESTED_RATIO:-0.15}
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks: [traffic-net]
+    mem_limit: 768m
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:9081/actuator/health >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 4s
+      retries: 12
+      start_period: 50s
+    restart: unless-stopped
+
+  history-service:
+    build:
+      context: .
+      dockerfile: services/history-service/Dockerfile
+    environment:
+      CASSANDRA_CONTACT_POINTS: cassandra
+      CASSANDRA_PORT: 9042
+      CASSANDRA_DATACENTER: ${CASSANDRA_DATACENTER:-datacenter1}
+      TRAFFIC_SERVICE_URL: http://traffic-service:8081
+      HISTORY_MAX_IMPORT_BATCH_SIZE: ${HISTORY_MAX_IMPORT_BATCH_SIZE:-5000}
+      HISTORY_MAX_RANGE_DAYS: ${HISTORY_MAX_RANGE_DAYS:-31}
+      HISTORY_COLLECTOR_FIXED_RATE_MS: ${HISTORY_COLLECTOR_FIXED_RATE_MS:-300000}
+      HISTORY_COLLECTOR_INITIAL_DELAY_MS: ${HISTORY_COLLECTOR_INITIAL_DELAY_MS:-20000}
+    depends_on:
+      cassandra:
+        condition: service_healthy
+      cassandra-init:
+        condition: service_completed_successfully
+      traffic-service:
+        condition: service_healthy
+    networks: [traffic-net]
+    mem_limit: 512m
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:9082/actuator/health >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 4s
+      retries: 15
+      start_period: 120s
+    restart: unless-stopped
+
+  prediction-service:
+    build:
+      context: .
+      dockerfile: services/prediction-service/Dockerfile
+    environment:
+      HISTORY_SERVICE_URL: http://history-service:8082
+      PREDICTION_SEGMENTS: ${PREDICTION_SEGMENTS:-segment-01,segment-02,segment-03,segment-04,segment-05,segment-06,segment-07,segment-08,segment-09,segment-10}
+      PREDICTION_LOOKBACK_DAYS: ${PREDICTION_LOOKBACK_DAYS:-14}
+      PREDICTION_MINIMUM_SAMPLES: ${PREDICTION_MINIMUM_SAMPLES:-100}
+      PREDICTION_TRAINING_FIXED_RATE_MS: ${PREDICTION_TRAINING_FIXED_RATE_MS:-3600000}
+      PREDICTION_HISTORY_PAGE_SIZE: ${PREDICTION_HISTORY_PAGE_SIZE:-5000}
+      PREDICTION_RETRY_FIXED_DELAY_MS: ${PREDICTION_RETRY_FIXED_DELAY_MS:-30000}
+    depends_on:
+      history-service:
+        condition: service_healthy
+    networks: [traffic-net]
+    mem_limit: 384m
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:9083/actuator/health >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 4s
+      retries: 12
+      start_period: 45s
+    restart: unless-stopped
+
+  gateway:
+    build:
+      context: .
+      dockerfile: services/gateway/Dockerfile
+    ports:
+      - "${GATEWAY_PORT:-8080}:8080"
+    environment:
+      GATEWAY_ALLOWED_ORIGINS: ${GATEWAY_ALLOWED_ORIGINS:-http://localhost:3000}
+    depends_on:
+      traffic-service:
+        condition: service_healthy
+      history-service:
+        condition: service_healthy
+      prediction-service:
+        condition: service_healthy
+    networks: [traffic-net]
+    mem_limit: 384m
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:9080/actuator/health >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 4s
+      retries: 12
+      start_period: 45s
+    restart: unless-stopped
+
+  traffic-simulator:
+    build:
+      context: .
+      dockerfile: services/traffic-simulator/Dockerfile
+    environment:
+      SIMULATOR_GATEWAY_URL: http://gateway:8080
+      SIMULATOR_SEED_DAYS: ${SIMULATOR_SEED_DAYS:-14}
+      SIMULATOR_INTERVAL_MS: ${SIMULATOR_INTERVAL_MS:-5000}
+      SIMULATOR_SEGMENT_COUNT: ${SIMULATOR_SEGMENT_COUNT:-10}
+      SIMULATOR_MEASUREMENTS_PER_SEGMENT: ${SIMULATOR_MEASUREMENTS_PER_SEGMENT:-3}
+      SIMULATOR_CENTER_LAT: ${SIMULATOR_CENTER_LAT:--18.8792}
+      SIMULATOR_CENTER_LON: ${SIMULATOR_CENTER_LON:-47.5079}
+      SIMULATOR_RANDOM_SEED: ${SIMULATOR_RANDOM_SEED:-20261114}
+      SIMULATOR_MANAGEMENT_PORT: ${SIMULATOR_MANAGEMENT_PORT:-9084}
+    depends_on:
+      gateway:
+        condition: service_healthy
+      history-service:
+        condition: service_healthy
+    networks: [traffic-net]
+    mem_limit: 256m
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:9084/actuator/health >/dev/null || exit 1"]
+      interval: 15s
+      timeout: 3s
+      retries: 8
+      start_period: 120s
+    restart: unless-stopped
+
+  prometheus:
+    image: ${PROMETHEUS_IMAGE:-prom/prometheus:v3.16.0}
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=7d
+      - --web.enable-lifecycle
+    ports:
+      - "${PROMETHEUS_PORT:-9090}:9090"
+    volumes:
+      - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    depends_on:
+      gateway:
+        condition: service_healthy
+      traffic-service:
+        condition: service_healthy
+      history-service:
+        condition: service_healthy
+      prediction-service:
+        condition: service_healthy
+    networks: [traffic-net]
+    mem_limit: 384m
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:9090/-/healthy"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  grafana:
+    image: ${GRAFANA_IMAGE:-grafana/grafana-oss:13.3.1}
+    ports:
+      - "${GRAFANA_PORT:-3000}:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./infra/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./infra/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      prometheus:
+        condition: service_healthy
+    networks: [traffic-net]
+    mem_limit: 256m
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:3000/api/health"]
+      interval: 10s
+      timeout: 4s
+      retries: 15
+      start_period: 30s
+    restart: unless-stopped
+
+networks:
+  traffic-net:
+    driver: bridge
+
+volumes:
+  mongo-data:
+  redis-data:
+  cassandra-data:
+  prometheus-data:
+  grafana-data:

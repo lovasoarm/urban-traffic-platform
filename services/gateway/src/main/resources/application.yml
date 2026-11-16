@@ -1,0 +1,67 @@
+server:
+  port: 8080
+  shutdown: graceful
+spring:
+  application:
+    name: gateway
+  lifecycle:
+    timeout-per-shutdown-phase: 20s
+  cloud:
+    gateway:
+      server:
+        webflux:
+          default-filters:
+            - name: Retry
+              args:
+                retries: 1
+                statuses: BAD_GATEWAY,GATEWAY_TIMEOUT,SERVICE_UNAVAILABLE
+                methods: GET,POST
+          httpclient:
+            connect-timeout: 2000
+            response-timeout: 5s
+          globalcors:
+            cors-configurations:
+              '[/**]':
+                allowedOrigins: "${GATEWAY_ALLOWED_ORIGINS:http://localhost:3000}"
+                allowedMethods: [GET, POST, OPTIONS]
+                allowedHeaders: ["*"]
+          routes:
+            - id: traffic-readings
+              uri: http://traffic-service:8081
+              predicates:
+                - Path=/api/v1/readings,/api/v1/readings/**
+            - id: traffic-state
+              uri: http://traffic-service:8081
+              predicates:
+                - Path=/api/v1/traffic/**
+            - id: traffic-segments
+              uri: http://traffic-service:8081
+              predicates:
+                - Path=/api/v1/segments,/api/v1/segments/**
+            - id: traffic-vehicles
+              uri: http://traffic-service:8081
+              predicates:
+                - Path=/api/v1/vehicles/**
+            - id: traffic-history
+              uri: http://history-service:8082
+              predicates:
+                - Path=/api/v1/history/**
+            - id: traffic-predictions
+              uri: http://prediction-service:8083
+              predicates:
+                - Path=/api/v1/predictions/**
+management:
+  server:
+    port: 9080
+  endpoints:
+    web:
+      exposure:
+        include: health,prometheus,info
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      show-details: never
+  metrics:
+    tags:
+      application: ${spring.application.name}

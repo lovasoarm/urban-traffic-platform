@@ -1,0 +1,32 @@
+server:
+  port: 8083
+  shutdown: graceful
+spring:
+  application:
+    name: prediction-service
+  lifecycle:
+    timeout-per-shutdown-phase: 20s
+management:
+  server:
+    port: 9083
+  endpoints:
+    web:
+      exposure:
+        include: health,prometheus,info
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      show-details: never
+  metrics:
+    tags:
+      application: ${spring.application.name}
+prediction:
+  history-service-url: ${HISTORY_SERVICE_URL:http://history-service:8082}
+  segments: ${PREDICTION_SEGMENTS:segment-01,segment-02,segment-03,segment-04,segment-05,segment-06,segment-07,segment-08,segment-09,segment-10}
+  lookback-days: ${PREDICTION_LOOKBACK_DAYS:14}
+  minimum-samples: ${PREDICTION_MINIMUM_SAMPLES:100}
+  training-fixed-rate-ms: ${PREDICTION_TRAINING_FIXED_RATE_MS:3600000}
+  history-page-size: ${PREDICTION_HISTORY_PAGE_SIZE:5000}
+  retry-count: 1
+  retry-fixed-delay-ms: ${PREDICTION_RETRY_FIXED_DELAY_MS:30000}

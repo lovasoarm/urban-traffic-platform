@@ -1,0 +1,26 @@
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+
+scrape_configs:
+  - job_name: gateway
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets: [gateway:9080]
+  - job_name: traffic-service
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets: [traffic-service:9081]
+  - job_name: history-service
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets: [history-service:9082]
+  - job_name: prediction-service
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets: [prediction-service:9083]
+
+  - job_name: traffic-simulator
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets: [traffic-simulator:9084]
